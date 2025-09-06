@@ -1,0 +1,5 @@
+{
+  "name": "Markit - List Manager",
+  "description": "A web application to manage and view lists of names associated with specific groups and sections, with real-time updates for the current selection.",
+  "requestFramePermissions": []
+}
