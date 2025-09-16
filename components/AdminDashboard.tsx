@@ -98,6 +98,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     }
   };
 
+  const handleDeleteCard = async (cardId: string, cardName: string) => {
+      if (window.confirm(`Are you sure you want to delete "${cardName}"? This will permanently delete all its attendance data and cannot be undone.`)) {
+          try {
+              const updates: { [key: string]: null } = {};
+              updates[`/cards/${cardId}`] = null;
+              updates[`/admins/${user.uid}/cards/${cardId}`] = null;
+              await update(ref(db), updates);
+          } catch (error) {
+              console.error("Error deleting card:", error);
+              alert("Failed to delete the card. Please try again.");
+          }
+      }
+  };
+
   if (loading) {
     return <div className="flex justify-center items-center h-screen"><LoadingSpinner className="h-12 w-12 text-indigo-500" /></div>;
   }
@@ -142,9 +156,23 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
         {cards.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {cards.map(card => (
-              <div key={card.id} className="p-6 bg-white dark:bg-gray-800 rounded-lg shadow cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setSelectedCardId(card.id)}>
-                <h3 className="text-lg font-bold text-indigo-600 dark:text-indigo-400">{card.cardName}</h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 truncate">ID: {card.id}</p>
+              <div key={card.id} className="p-6 bg-white dark:bg-gray-800 rounded-lg shadow relative group transition-shadow hover:shadow-lg">
+                <div onClick={() => setSelectedCardId(card.id)} className="cursor-pointer">
+                    <h3 className="text-lg font-bold text-indigo-600 dark:text-indigo-400">{card.cardName}</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 truncate">ID: {card.id}</p>
+                </div>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCard(card.id, card.cardName);
+                    }}
+                    className="absolute top-2 right-2 p-2 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-red-100 dark:hover:bg-red-900/50 hover:text-red-600 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label={`Delete ${card.cardName}`}
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" />
+                    </svg>
+                </button>
               </div>
             ))}
           </div>

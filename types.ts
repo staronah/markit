@@ -47,6 +47,8 @@ export interface Card {
     current?: CurrentSession;
     // FIX: Add optional `createdAt` property to align with its usage in `AdminDashboard.tsx`.
     createdAt?: string;
+    code?: string;
+    codeExpiresAt?: number;
 }
 
 export interface AdminProfile {

@@ -1,5 +1,5 @@
 {
-  "name": "mark-it-attendance",
+  "name": "mark-it-attendance-admin",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "vite build && gh-pages -d dist"
-    },
+  },
+  
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
