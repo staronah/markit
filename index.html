@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mark-It Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-app.js";
+      import { getAuth } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-auth.js";
+      import { getDatabase } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-database.js";
+
+      const firebaseConfig = {
+        apiKey: "AIzaSyCSHNaZv1NQk2gnNWrGLjflkxRT87nGEYg",
+        authDomain: "markit-868ce.firebaseapp.com",
+        databaseURL: "https://markit-868ce-default-rtdb.firebaseio.com",
+        projectId: "markit-868ce",
+        storageBucket: "markit-868ce.firebasestorage.app",
+        messagingSenderId: "1082751720527",
+        appId: "1:1082751720527:web:79c4c1a875084f9159de3a",
+        measurementId: "G-4HCZ9R5D7Z"
+      };
+
+      // Initialize Firebase
+      const app = initializeApp(firebaseConfig);
+      window.firebase = {
+          app,
+          auth: getAuth(app),
+          database: getDatabase(app)
+      };
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react/": "https://aistudiocdn.com/react@^19.1.1/",
+          "react": "https://aistudiocdn.com/react@^19.1.1",
+          "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/"
+        }
+      }
+    </script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-gray-100 dark:bg-gray-900">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
