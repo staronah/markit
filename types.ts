@@ -3,6 +3,12 @@ export interface GeoLocation {
   longitude: number;
 }
 
+export interface AttendanceEvent {
+  timestamp: string;
+  location: GeoLocation;
+  manualCodeEntry?: boolean;
+}
+
 export interface CurrentSession {
   active: boolean;
   cardId: string;
@@ -21,8 +27,8 @@ export interface DeviceInfo {
 
 export interface AttendanceRecord {
   sessionId: number;
-  timestamp: string;
-  location: GeoLocation;
+  checkin: AttendanceEvent;
+  checkout?: AttendanceEvent;
   deviceInfo: DeviceInfo;
   userId: string;
   userName: string;
@@ -42,13 +48,17 @@ export interface Card {
     id: string;
     cardName: string;
     hostId: string;
-    users?: { [key: string]: User };
+    users?: { [key:string]: User };
     logs?: { [date: string]: { [key: string]: AttendanceRecord } };
     current?: CurrentSession;
     // FIX: Add optional `createdAt` property to align with its usage in `AdminDashboard.tsx`.
     createdAt?: string;
     code?: string;
     codeExpiresAt?: number;
+    settings?: {
+        signOutEnabled?: boolean;
+        checkoutEnabled?: boolean;
+    };
 }
 
 export interface AdminProfile {

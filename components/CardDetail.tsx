@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User as FirebaseUser } from 'https://www.gstatic.com/firebasejs/9.17.1/firebase-auth.js';
-import { ref, onValue, update } from 'https://www.gstatic.com/firebasejs/9.17.1/firebase-database.js';
+import { ref, onValue, update, get } from 'https://www.gstatic.com/firebasejs/9.17.1/firebase-database.js';
 import { db } from '../firebase/config';
-import type { Card, CurrentSession, AttendanceRecord } from '../types';
+import type { Card, CurrentSession, AttendanceRecord, GeoLocation } from '../types';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { getHaversineDistance } from '../utils/geolocation';
 import LoadingSpinner from './LoadingSpinner';
 import UserManagement from './UserManagement';
+import AttendanceMatrix from './AttendanceMatrix';
 
 declare const XLSX: any;
 
@@ -30,7 +31,12 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentPage, setCurrentPage] = useState(1);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showAttendanceMatrix, setShowAttendanceMatrix] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [isGeneratingQR, setIsGeneratingQR] = useState(false);
+  const [isUpdatingSettings, setIsUpdatingSettings] = useState(false);
+  const [isUpdatingCheckout, setIsUpdatingCheckout] = useState(false);
 
   useEffect(() => {
     const cardRef = ref(db, `cards/${cardId}`);
@@ -83,12 +89,166 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
     const unsubscribe = onValue(logRef, (snapshot) => {
       const data = snapshot.val();
       const records: AttendanceRecord[] = data ? Object.values(data) : [];
-      // Sort by timestamp descending
-      records.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      // Sort by checkin time descending
+      records.sort((a, b) => new Date(b.checkin.timestamp).getTime() - new Date(a.checkin.timestamp).getTime());
       setDailyLog(records);
     });
     return () => unsubscribe();
   }, [cardId, selectedDate]);
+
+  useEffect(() => {
+    // Periodically update host's location if they are hosting an active session
+    if (currentSession?.active && user.uid === currentSession.hostId) {
+      const locationUpdateInterval = setInterval(() => {
+        if (!navigator.geolocation) {
+          console.warn("Geolocation is not supported, cannot update host location.");
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const newCoordinates: GeoLocation = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            };
+            
+            const sessionRef = ref(db, `cards/${cardId}/current`);
+            update(sessionRef, { location: newCoordinates })
+              .catch(err => console.error("Failed to auto-update session location:", err));
+          },
+          (error) => {
+            console.error("Error getting location for periodic update:", error.message);
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      }, 120000); // 2 minutes
+
+      return () => clearInterval(locationUpdateInterval);
+    }
+  }, [cardId, user.uid, currentSession]);
+
+  const handleGetShareableLink = async () => {
+    if (!card || !card.cardName) {
+      alert("Card details not available yet. Please try again in a moment.");
+      return;
+    }
+    try {
+        const urlRef = ref(db, 'url');
+        const snapshot = await get(urlRef);
+        if (snapshot.exists()) {
+            const baseUrl = snapshot.val();
+            const shareableLink = `${baseUrl}?cardid=${cardId}`;
+            const messageToCopy = `This is the attendance url for ${card.cardName} ${shareableLink}`;
+            await navigator.clipboard.writeText(messageToCopy);
+            setLinkCopied(true);
+            setTimeout(() => setLinkCopied(false), 3000);
+        } else {
+            alert("The base URL for sharing is not configured in the database.");
+        }
+    } catch (error) {
+        console.error("Failed to get shareable link:", error);
+        alert("Could not copy the link. Please try again.");
+    }
+  };
+
+  const handleGenerateQRCode = async () => {
+    if (!card || !card.cardName) {
+        alert("Card details not available yet. Please try again in a moment.");
+        return;
+    }
+    setIsGeneratingQR(true);
+    try {
+        const urlRef = ref(db, 'url');
+        const snapshot = await get(urlRef);
+        if (!snapshot.exists()) {
+            throw new Error("Base URL for sharing is not configured in the database.");
+        }
+        
+        const qrCodeLib = (window as any).QRCode;
+        if (!qrCodeLib) {
+            throw new Error('QRCode.js library is not loaded. Please try again.');
+        }
+
+        const baseUrl = snapshot.val();
+        const shareableLink = `${baseUrl}?cardid=${cardId}`;
+
+        // Create an in-memory canvas for the QR code
+        const qrCanvas = document.createElement('canvas');
+        await qrCodeLib.toCanvas(qrCanvas, shareableLink, { 
+            width: 256, 
+            margin: 2,
+            errorCorrectionLevel: 'H'
+        });
+
+        // Create the final canvas for the image with text
+        const finalCanvas = document.createElement('canvas');
+        const ctx = finalCanvas.getContext('2d');
+        if (!ctx) throw new Error("Could not get canvas context.");
+
+        const padding = 20;
+        const textHeight = 40;
+        const qrSize = qrCanvas.width;
+        
+        finalCanvas.width = qrSize + padding * 2;
+        finalCanvas.height = qrSize + padding * 2 + textHeight;
+
+        // Fill background with white
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
+        
+        // Draw the QR code onto the final canvas
+        ctx.drawImage(qrCanvas, padding, padding);
+
+        // Add the card name text below the QR code
+        ctx.fillStyle = 'black';
+        ctx.font = 'bold 20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(card.cardName, finalCanvas.width / 2, qrSize + padding + 25);
+
+        // Trigger the download
+        const link = document.createElement('a');
+        const safeCardName = card.cardName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        link.download = `${safeCardName}_qr_code.png`;
+        link.href = finalCanvas.toDataURL('image/png');
+        link.click();
+
+    } catch (error) {
+        console.error("Failed to generate QR code:", error);
+        alert(`Could not generate QR code: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+        setIsGeneratingQR(false);
+    }
+  };
+
+  const handleToggleSignOut = async () => {
+    setIsUpdatingSettings(true);
+    try {
+      const currentStatus = card?.settings?.signOutEnabled || false;
+      const updates: { [key: string]: any } = {};
+      updates[`/cards/${cardId}/settings/signOutEnabled`] = !currentStatus;
+      await update(ref(db), updates);
+    } catch (error) {
+      console.error("Failed to update sign out setting:", error);
+      alert("Failed to update setting. Please try again.");
+    } finally {
+      setIsUpdatingSettings(false);
+    }
+  };
+
+  const handleToggleCheckout = async () => {
+    setIsUpdatingCheckout(true);
+    try {
+      const currentStatus = card?.settings?.checkoutEnabled || false;
+      const updates: { [key: string]: any } = {};
+      updates[`/cards/${cardId}/settings/checkoutEnabled`] = !currentStatus;
+      await update(ref(db), updates);
+    } catch (error) {
+      console.error("Failed to update checkout setting:", error);
+      alert("Failed to update setting. Please try again.");
+    } finally {
+      setIsUpdatingCheckout(false);
+    }
+  };
 
   const handleStartSession = async () => {
     if (!coordinates) {
@@ -138,6 +298,18 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
     }
   };
 
+  const getDuration = (start: string, end?: string): string => {
+      if (!end) return '—';
+      const diffMs = new Date(end).getTime() - new Date(start).getTime();
+      const diffMinutes = Math.round(diffMs / 60000);
+      if (diffMinutes < 60) {
+          return `${diffMinutes} min`;
+      }
+      const hours = Math.floor(diffMinutes / 60);
+      const minutes = diffMinutes % 60;
+      return `${hours}h ${minutes}m`;
+  };
+
   const handleExportToExcel = () => {
     if (dailyLog.length === 0) {
       alert("No data to export for the selected date.");
@@ -150,13 +322,14 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
 
     const dataToExport = dailyLog.map(record => {
       const distance = currentSession && currentSession.active && record.sessionId === currentSession.createdAt 
-        ? getHaversineDistance(record.location, currentSession.location) 
+        ? getHaversineDistance(record.checkin.location, currentSession.location) 
         : null;
       return {
         'Name': record.userName,
         'ID': record.userId,
-        'Time': new Date(record.timestamp).toLocaleTimeString(),
-        'Date': new Date(record.timestamp).toLocaleDateString(),
+        'Check-in Time': new Date(record.checkin.timestamp).toLocaleTimeString(),
+        'Check-out Time': record.checkout ? new Date(record.checkout.timestamp).toLocaleTimeString() : 'N/A',
+        'Duration': getDuration(record.checkin.timestamp, record.checkout?.timestamp),
         'Distance (m)': distance !== null ? distance.toFixed(0) : 'N/A',
         'OS': record.deviceInfo.os,
         'Browser': record.deviceInfo.browser,
@@ -178,8 +351,9 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
     const columnWidths = [
         { wch: 25 }, // Name
         { wch: 20 }, // ID
-        { wch: 15 }, // Time
-        { wch: 15 }, // Date
+        { wch: 15 }, // Check-in Time
+        { wch: 15 }, // Check-out Time
+        { wch: 12 }, // Duration
         { wch: 15 }, // Distance (m)
         { wch: 15 }, // OS
         { wch: 20 }, // Browser
@@ -217,7 +391,45 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-6">
               <div className="p-6 bg-white dark:bg-gray-800 rounded-lg shadow">
-              <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200">Session Control</h2>
+              <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Session Control</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleGetShareableLink}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-900/50 rounded-md hover:bg-indigo-200 dark:hover:bg-indigo-900 transition-colors"
+                        title="Copy public sign-in link"
+                    >
+                        {linkCopied ? (
+                            <>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span>Copied!</span>
+                            </>
+                        ) : (
+                            <>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
+                                </svg>
+                            </>
+                        )}
+                    </button>
+                    <button
+                        onClick={handleGenerateQRCode}
+                        disabled={isGeneratingQR}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-900/50 rounded-md hover:bg-indigo-200 dark:hover:bg-indigo-900 transition-colors disabled:opacity-50"
+                        title="Generate and save QR code"
+                    >
+                        {isGeneratingQR ? (
+                            <LoadingSpinner className="h-4 w-4 text-indigo-500" />
+                        ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M5 5a1 1 0 011-1h8a1 1 0 011 1v8a1 1 0 01-1 1H6a1 1 0 01-1-1V5zM3 3a3 3 0 013-3h8a3 3 0 013 3v8a3 3 0 01-3 3H6a3 3 0 01-3-3V3zm5 5h4v4H8V8zm2-2H8v2h2V6z" />
+                            </svg>
+                        )}
+                    </button>
+                </div>
+              </div>
               {currentSession && currentSession.active ? (
                   <div className="space-y-4">
                       <p className="text-green-600 dark:text-green-400 font-semibold text-center">Session is LIVE</p>
@@ -252,13 +464,77 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
                   </div>
               )}
             </div>
+
+            <div className="p-6 bg-white dark:bg-gray-800 rounded-lg shadow">
+              <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-4">Card Settings</h2>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        User Sign Out Button
+                    </p>
+                    <button
+                        onClick={handleToggleSignOut}
+                        disabled={isUpdatingSettings}
+                        className={`px-4 py-2 text-sm font-medium rounded-md transition-colors w-24 flex justify-center ${
+                            card?.settings?.signOutEnabled 
+                            ? 'bg-red-600 hover:bg-red-700 text-white' 
+                            : 'bg-green-600 hover:bg-green-700 text-white'
+                        } disabled:opacity-50`}
+                    >
+                        {isUpdatingSettings ? (
+                            <LoadingSpinner className="h-4 w-4" />
+                        ) : card?.settings?.signOutEnabled ? (
+                            'Disable'
+                        ) : (
+                            'Enable'
+                        )}
+                    </button>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                    When enabled, users will see a "Sign Out" button on the attendance page, allowing them to clear their session on that device.
+                </p>
+                 <div className="border-t border-gray-200 dark:border-gray-700"></div>
+                 <div className="flex justify-between items-center pt-2">
+                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Enable Checkout
+                    </p>
+                    <button
+                        onClick={handleToggleCheckout}
+                        disabled={isUpdatingCheckout}
+                        className={`px-4 py-2 text-sm font-medium rounded-md transition-colors w-24 flex justify-center ${
+                            card?.settings?.checkoutEnabled 
+                            ? 'bg-red-600 hover:bg-red-700 text-white' 
+                            : 'bg-green-600 hover:bg-green-700 text-white'
+                        } disabled:opacity-50`}
+                    >
+                        {isUpdatingCheckout ? (
+                            <LoadingSpinner className="h-4 w-4" />
+                        ) : card?.settings?.checkoutEnabled ? (
+                            'Disable'
+                        ) : (
+                            'Enable'
+                        )}
+                    </button>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                    When enabled, users who have checked in can also check out, recording their departure time.
+                </p>
+              </div>
+            </div>
           </div>
 
           <div className="lg:col-span-2 p-6 bg-white dark:bg-gray-800 rounded-lg shadow">
             <div className="flex flex-wrap justify-between items-center mb-4 gap-4">
               <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">Attendance Log</h2>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
                   <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="px-3 py-2 border rounded-md bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" />
+                  <button 
+                    onClick={() => setShowAttendanceMatrix(true)} 
+                    className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700"
+                    title="View attendance record matrix"
+                  >
+                    View Records
+                  </button>
                   <button onClick={handleExportToExcel} disabled={dailyLog.length === 0} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-800">Export to Excel</button>
               </div>
             </div>
@@ -268,22 +544,26 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-700">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Name</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">ID</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Time</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Distance (m)</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Name</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">ID</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Check-in</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Check-out</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Duration</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Dist (m)</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     {paginatedLog.map((record, index) => {
-                      const distance = currentSession && currentSession.active && record.sessionId === currentSession.createdAt ? getHaversineDistance(record.location, currentSession.location) : null;
+                      const distance = currentSession && currentSession.active && record.sessionId === currentSession.createdAt ? getHaversineDistance(record.checkin.location, currentSession.location) : null;
                       const isOutOfRange = distance !== null && currentSession ? distance > currentSession.maxDistance : false;
                       return (
                           <tr key={index} className={isOutOfRange ? 'bg-red-50 dark:bg-red-900/30' : ''}>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{record.userName}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{record.userId}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{new Date(record.timestamp).toLocaleTimeString()}</td>
-                            <td className={`px-6 py-4 whitespace-nowrap text-sm ${isOutOfRange ? 'font-bold text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                            <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{record.userName}</td>
+                            <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{record.userId}</td>
+                            <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{new Date(record.checkin.timestamp).toLocaleTimeString()}</td>
+                            <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{record.checkout ? new Date(record.checkout.timestamp).toLocaleTimeString() : '—'}</td>
+                            <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{getDuration(record.checkin.timestamp, record.checkout?.timestamp)}</td>
+                            <td className={`px-4 py-4 whitespace-nowrap text-sm ${isOutOfRange ? 'font-bold text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
                               {distance !== null ? distance.toFixed(0) : 'N/A'}
                             </td>
                           </tr>
@@ -323,6 +603,13 @@ const CardDetail: React.FC<CardDetailProps> = ({ cardId, user, onBack }) => {
             cardId={cardId}
             users={card.users}
             onClose={() => setShowUserManagement(false)}
+        />
+      )}
+
+      {showAttendanceMatrix && (
+        <AttendanceMatrix
+          cardId={cardId}
+          onClose={() => setShowAttendanceMatrix(false)}
         />
       )}
     </>

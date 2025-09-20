@@ -1,5 +1,5 @@
 {
-  "name": "Mark-It Attendance admin",
+  "name": "Copy of Mark-It Attendance admin",
   "description": "A simple and elegant web application for users to sign in for attendance. It captures user ID and full name, saves it to a database, and remembers the user on their device for future visits.",
   "requestFramePermissions": [
     "geolocation"
